@@ -7,6 +7,9 @@ learning_rate: 0.0002
 amp: true
 grad_clip: 1.0
 checkpoint_every: 1000
+log_every: 50
+preview_every: 1000
+preview_samples: 4
 auxiliary_every: 4
 text_dropout: 0.10
 style_dropout: 0.10

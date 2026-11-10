@@ -31,6 +31,12 @@ handwriting-var train-var --config configs/kaggle.yaml --manifest artifacts/mani
 Checkpoints include optimizer, scheduler, AMP scaler, RNG state, config hash,
 and manifest hash for resumable Kaggle sessions.
 
+Training prints step, losses, learning rate, throughput, scale accuracies, and
+peak CUDA memory. Preview grids are written next to the checkpoint under
+`previews/<stage>/step_XXXXXXX.png`. The default Kaggle config logs every 50
+optimizer steps and previews every 1,000; `configs/smoke.yaml` emits both at
+every step.
+
 ## Inference
 
 ```python

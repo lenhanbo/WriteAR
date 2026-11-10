@@ -36,6 +36,9 @@ class TrainConfig:
     amp: bool = True
     grad_clip: float = 1.0
     checkpoint_every: int = 1000
+    log_every: int = 50
+    preview_every: int = 1000
+    preview_samples: int = 4
     auxiliary_every: int = 4
     text_dropout: float = 0.10
     style_dropout: float = 0.10
