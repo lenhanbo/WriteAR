@@ -1,0 +1,25 @@
+seed: 42
+tokenizer_steps: 2
+var_steps: 2
+batch_size: 2
+accumulation: 1
+learning_rate: 0.0002
+amp: false
+grad_clip: 1.0
+checkpoint_every: 2
+auxiliary_every: 4
+text_dropout: 0.10
+style_dropout: 0.10
+model:
+  image_height: 64
+  image_width: 256
+  latent_dim: 32
+  codebook_size: 32
+  scales: [[1, 1], [1, 2], [1, 4], [2, 8], [3, 12], [4, 16]]
+  model_dim: 48
+  heads: 6
+  text_layers: 1
+  style_layers: 1
+  fusion_layers: 1
+  var_layers: 1
+  max_text_length: 24

@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+artifacts/
+checkpoints/
+outputs/
+*.pt
+*.pth
+
+.venv/
+venv/
+.idea/
+.vscode/
+

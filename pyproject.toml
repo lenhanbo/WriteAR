@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "handwriting-var"
+version = "0.1.0"
+description = "One-shot handwriting synthesis with multi-scale VQ and next-scale prediction"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.1", "torchvision>=0.16", "Pillow>=10", "numpy>=1.24", "PyYAML>=6", "tqdm>=4.66"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+handwriting-var = "handwriting_var.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+

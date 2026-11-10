@@ -8,23 +8,24 @@ cross-attention (no AdaIN, FiLM, or AdaLN).
 ## Install and prepare
 
 ```bash
-pip install -e VAR
-handwriting-var prepare --iam-root data/iam_dataset --vatr-root VATr \
-  --output VAR/artifacts/manifests
+pip install -e .
+handwriting-var prepare --iam-root data/iam_dataset \
+  --output artifacts/manifests
 ```
 
-Preparation recovers the trusted 500 VATr writer identities, normalizes labels,
-and creates a deterministic 400/50/50 writer-disjoint split plus vocabulary and
-training-writer mapping.
+`forms.txt` is discovered at `data/iam_dataset/forms.txt` (or under `ascii/`).
+Preparation uses its official IAM form-to-writer mapping, normalizes labels,
+and creates a deterministic 80/10/10 writer-disjoint split plus vocabulary and
+training-writer mapping. VATr metadata is not required.
 
 ## Training order
 
 ```bash
-handwriting-var train-tokenizer --config VAR/configs/kaggle.yaml --manifest VAR/artifacts/manifests/train.json --vocab VAR/artifacts/manifests/vocab.json --output checkpoints/tokenizer.pt
-handwriting-var train-ocr --config VAR/configs/kaggle.yaml --manifest VAR/artifacts/manifests/train.json --vocab VAR/artifacts/manifests/vocab.json --output checkpoints/ocr.pt
-handwriting-var train-writer --config VAR/configs/kaggle.yaml --manifest VAR/artifacts/manifests/train.json --vocab VAR/artifacts/manifests/vocab.json --writers VAR/artifacts/manifests/writers.json --output checkpoints/writer.pt
-handwriting-var cache-tokens --config VAR/configs/kaggle.yaml --manifest VAR/artifacts/manifests/train.json --vocab VAR/artifacts/manifests/vocab.json --tokenizer checkpoints/tokenizer.pt --output VAR/artifacts/tokens
-handwriting-var train-var --config VAR/configs/kaggle.yaml --manifest VAR/artifacts/manifests/train.json --vocab VAR/artifacts/manifests/vocab.json --writers VAR/artifacts/manifests/writers.json --tokenizer checkpoints/tokenizer.pt --token-cache VAR/artifacts/tokens --ocr checkpoints/ocr.pt --writer-checkpoint checkpoints/writer.pt --output checkpoints/var_best.pt
+handwriting-var train-tokenizer --config configs/kaggle.yaml --manifest artifacts/manifests/train.json --vocab artifacts/manifests/vocab.json --output checkpoints/tokenizer.pt
+handwriting-var train-ocr --config configs/kaggle.yaml --manifest artifacts/manifests/train.json --vocab artifacts/manifests/vocab.json --output checkpoints/ocr.pt
+handwriting-var train-writer --config configs/kaggle.yaml --manifest artifacts/manifests/train.json --vocab artifacts/manifests/vocab.json --writers artifacts/manifests/writers.json --output checkpoints/writer.pt
+handwriting-var cache-tokens --config configs/kaggle.yaml --manifest artifacts/manifests/train.json --vocab artifacts/manifests/vocab.json --tokenizer checkpoints/tokenizer.pt --output artifacts/tokens
+handwriting-var train-var --config configs/kaggle.yaml --manifest artifacts/manifests/train.json --vocab artifacts/manifests/vocab.json --writers artifacts/manifests/writers.json --tokenizer checkpoints/tokenizer.pt --token-cache artifacts/tokens --ocr checkpoints/ocr.pt --writer-checkpoint checkpoints/writer.pt --output checkpoints/var_best.pt
 ```
 
 Checkpoints include optimizer, scheduler, AMP scaler, RNG state, config hash,
