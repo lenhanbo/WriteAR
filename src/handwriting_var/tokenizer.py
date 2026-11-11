@@ -25,9 +25,7 @@ class Encoder(nn.Module):
             layers += [nn.Conv2d(a, b, 4, 2, 1), nn.GroupNorm(8, b), nn.SiLU(), ResidualBlock(b)]
         self.net = nn.Sequential(*layers)
     def forward(self, image):
-        # A bounded latent prevents the residual/codebook objective from
-        # diverging before the decoder has learned a useful reconstruction.
-        return torch.tanh(self.net(image))
+        return self.net(image)
 
 
 class Decoder(nn.Module):
@@ -43,19 +41,20 @@ class Decoder(nn.Module):
     def forward(self, latent): return self.net(latent)
 
 
+class ResidualQuantConv(nn.Module):
+    """VAR's phi(x) = (1-r)x + r Conv3x3(x)."""
+    def __init__(self, dimension: int, ratio=.5):
+        super().__init__(); self.ratio=ratio; self.conv=nn.Conv2d(dimension,dimension,3,padding=1)
+    def forward(self, value):
+        return value.mul(1-self.ratio)+self.conv(value).mul(self.ratio)
+
+
 class MultiScaleResidualQuantizer(nn.Module):
     def __init__(self, codebook_size=1024, dimension=128, scales=SCALES):
         super().__init__()
         self.scales = tuple(tuple(x) for x in scales)
         self.codebook = nn.Embedding(codebook_size, dimension)
-        self.residual_convs = nn.ModuleList([nn.Conv2d(dimension, dimension, 3, padding=1) for _ in self.scales])
-        for conv in self.residual_convs:
-            # Start as an identity residual projection. Random projections at
-            # all six scales can amplify the residual and collapse assignment.
-            nn.init.zeros_(conv.weight); nn.init.zeros_(conv.bias)
-            with torch.no_grad():
-                diagonal=torch.arange(dimension)
-                conv.weight[diagonal,diagonal,1,1]=1
+        self.residual_convs = nn.ModuleList([ResidualQuantConv(dimension,.5) for _ in self.scales])
         self.register_buffer("initialized",torch.tensor(False))
         self.register_buffer("usage_ema",torch.zeros(codebook_size))
         self.register_buffer("update_count",torch.zeros((),dtype=torch.long))
@@ -107,9 +106,14 @@ class MultiScaleResidualQuantizer(nn.Module):
         return self.merge_embeddings([self.lookup(ids) for ids in indices])
 
     def forward(self, latent: torch.Tensor):
-        if not bool(self.initialized): self.initialize_codebook(latent.detach())
-        residual = latent; quantized_sum = torch.zeros_like(latent); indices = []; codebook_loss = latent.new_zeros(())
-        commitment = latent.new_zeros(()); counts = torch.zeros(self.codebook.num_embeddings, device=latent.device); assignment_samples=[]
+        # The official VAR quantizer performs assignment and residual updates
+        # on a detached fp32 copy, while the cumulative f_hat objective trains
+        # the codebook/projections and straight-through trains the encoder.
+        feature=latent.float(); feature_detached=feature.detach()
+        if not bool(self.initialized): self.initialize_codebook(feature_detached)
+        residual=feature_detached.clone(); quantized_sum=torch.zeros_like(feature); indices=[]
+        codebook_loss=feature.new_zeros(()); commitment=feature.new_zeros(())
+        counts=torch.zeros(self.codebook.num_embeddings,device=latent.device); assignment_samples=[]
         for size, conv in zip(self.scales, self.residual_convs):
             local = F.adaptive_avg_pool2d(residual, size)
             flat = local.permute(0, 2, 3, 1).reshape(-1, local.shape[1])
@@ -118,11 +122,10 @@ class MultiScaleResidualQuantizer(nn.Module):
             ids = distance.argmin(1).reshape(latent.shape[0], *size); indices.append(ids)
             counts.scatter_add_(0, ids.flatten(), torch.ones_like(ids.flatten(), dtype=counts.dtype))
             embedding = self.lookup(ids)
-            codebook_loss = codebook_loss + F.mse_loss(embedding, local.detach())
-            commitment = commitment + F.mse_loss(local, embedding.detach())
-            st = local + (embedding - local).detach()
-            contribution = conv(F.interpolate(st, latent.shape[-2:], mode="bilinear", align_corners=False))
+            contribution = conv(F.interpolate(embedding,feature.shape[-2:],mode="bicubic",align_corners=False))
             quantized_sum = quantized_sum + contribution
+            codebook_loss = codebook_loss + F.mse_loss(quantized_sum,feature_detached)
+            commitment = commitment + F.mse_loss(feature,quantized_sum.detach())
             residual = residual - contribution.detach()
         self.update_usage_and_revive(counts,torch.cat(assignment_samples,0))
         probability = counts / counts.sum().clamp_min(1)
@@ -132,7 +135,8 @@ class MultiScaleResidualQuantizer(nn.Module):
         metrics = {"perplexity": perplexity, "active_code_ratio": batch_active,
                    "dead_codes": counts.eq(0).sum(), "usage_active_code_ratio": usage_active}
         n = len(self.scales)
-        return quantized_sum, indices, codebook_loss / n, commitment / n, metrics
+        quantized_st=feature+(quantized_sum-feature).detach()
+        return quantized_st, indices, codebook_loss / n, commitment / n, metrics
 
 
 class MultiScaleVQVAE(nn.Module):

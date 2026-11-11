@@ -1,7 +1,7 @@
 seed: 42
 tokenizer_steps: 80000
 var_steps: 120000
-batch_size: 8
+batch_size: 
 accumulation: 4
 learning_rate: 0.0002
 amp: true
