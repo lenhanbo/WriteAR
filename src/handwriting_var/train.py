@@ -103,7 +103,7 @@ def train_tokenizer(manifest,vocab_path,output,config: TrainConfig,device="cuda"
                          loss=float(loss.detach()),rec=float(rec.detach()),codebook=float(codebook.detach()),
                          commit=float(commit.detach()),adv=float(generator_adv.detach()),d_loss=float(dloss.detach()),
                          perplexity=float(metrics["perplexity"].detach()),active=float(metrics["active_code_ratio"].detach()),
-                         dead=int(metrics["dead_codes"].detach()))
+                         usage_active=float(metrics["usage_active_code_ratio"].detach()),dead=int(metrics["dead_codes"].detach()))
         if boundary and should_emit(update,config.preview_every,final):
             path=save_preview(output,"tokenizer",update,[image,reconstruction],config.preview_samples)
             print(f"[tokenizer] preview={path}",flush=True)

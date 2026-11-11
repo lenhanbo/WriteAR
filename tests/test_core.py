@@ -15,6 +15,14 @@ def test_token_shapes_and_count():
     assert sum(x[0].numel() for x in tokens)==123
 
 
+def test_codebook_data_initialization_avoids_single_code_collapse():
+    model=MultiScaleVQVAE(latent_dim=32,codebook_size=64)
+    _,_,codebook,commit,metrics=model(torch.randn(4,1,64,256))
+    assert torch.isfinite(codebook) and torch.isfinite(commit)
+    assert metrics["perplexity"]>1.5
+    assert metrics["active_code_ratio"]>.1
+
+
 def test_scale_causal_mask_has_no_future_leak():
     mask=block_causal_mask(); slices=scale_slices()
     for current,row in enumerate(slices):

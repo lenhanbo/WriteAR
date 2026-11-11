@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -25,7 +24,10 @@ class Encoder(nn.Module):
         for a, b in zip(channels, channels[1:]):
             layers += [nn.Conv2d(a, b, 4, 2, 1), nn.GroupNorm(8, b), nn.SiLU(), ResidualBlock(b)]
         self.net = nn.Sequential(*layers)
-    def forward(self, image): return self.net(image)
+    def forward(self, image):
+        # A bounded latent prevents the residual/codebook objective from
+        # diverging before the decoder has learned a useful reconstruction.
+        return torch.tanh(self.net(image))
 
 
 class Decoder(nn.Module):
@@ -46,8 +48,51 @@ class MultiScaleResidualQuantizer(nn.Module):
         super().__init__()
         self.scales = tuple(tuple(x) for x in scales)
         self.codebook = nn.Embedding(codebook_size, dimension)
-        nn.init.uniform_(self.codebook.weight, -1 / codebook_size, 1 / codebook_size)
         self.residual_convs = nn.ModuleList([nn.Conv2d(dimension, dimension, 3, padding=1) for _ in self.scales])
+        for conv in self.residual_convs:
+            # Start as an identity residual projection. Random projections at
+            # all six scales can amplify the residual and collapse assignment.
+            nn.init.zeros_(conv.weight); nn.init.zeros_(conv.bias)
+            with torch.no_grad():
+                diagonal=torch.arange(dimension)
+                conv.weight[diagonal,diagonal,1,1]=1
+        self.register_buffer("initialized",torch.tensor(False))
+        self.register_buffer("usage_ema",torch.zeros(codebook_size))
+        self.register_buffer("update_count",torch.zeros((),dtype=torch.long))
+
+    @torch.no_grad()
+    def initialize_codebook(self, latent: torch.Tensor) -> None:
+        """Data-dependent initialization gives every code a viable starting point."""
+        samples=torch.cat([F.adaptive_avg_pool2d(latent,size).permute(0,2,3,1).reshape(-1,latent.shape[1])
+                           for size in self.scales],0).float()
+        count=self.codebook.num_embeddings
+        if samples.shape[0]>=count:
+            selected=samples[torch.randperm(samples.shape[0],device=samples.device)[:count]]
+        else:
+            selected=samples[torch.randint(samples.shape[0],(count,),device=samples.device)]
+        scale=samples.std(0,unbiased=False).mean().clamp_min(1e-3)
+        selected=selected+torch.randn_like(selected)*(scale*.01)
+        self.codebook.weight.copy_(selected.to(self.codebook.weight.dtype))
+        self.usage_ema.fill_(1/self.codebook.num_embeddings)
+        self.initialized.fill_(True)
+
+    @torch.no_grad()
+    def update_usage_and_revive(self, counts: torch.Tensor, samples: torch.Tensor) -> None:
+        probability=counts/counts.sum().clamp_min(1)
+        self.usage_ema.mul_(.99).add_(probability.to(self.usage_ema.dtype),alpha=.01)
+        self.update_count.add_(1)
+        if not self.training or self.update_count.item()%100:
+            return
+        threshold=1/(self.codebook.num_embeddings*100)
+        dead=torch.nonzero(self.usage_ema<threshold).flatten()
+        if dead.numel()==0:
+            return
+        # Revive at most 5% at once to avoid a disruptive full reset.
+        dead=dead[:max(1,self.codebook.num_embeddings//20)]
+        replacements=samples[torch.randint(samples.shape[0],(dead.numel(),),device=samples.device)].float()
+        noise=replacements.std(0,unbiased=False).mean().clamp_min(1e-3)*.01
+        self.codebook.weight[dead].copy_((replacements+torch.randn_like(replacements)*noise).to(self.codebook.weight.dtype))
+        self.usage_ema[dead]=1/self.codebook.num_embeddings
 
     def lookup(self, ids: torch.Tensor) -> torch.Tensor:
         return self.codebook(ids).permute(0, 3, 1, 2).contiguous()
@@ -62,11 +107,13 @@ class MultiScaleResidualQuantizer(nn.Module):
         return self.merge_embeddings([self.lookup(ids) for ids in indices])
 
     def forward(self, latent: torch.Tensor):
+        if not bool(self.initialized): self.initialize_codebook(latent.detach())
         residual = latent; quantized_sum = torch.zeros_like(latent); indices = []; codebook_loss = latent.new_zeros(())
-        commitment = latent.new_zeros(()); counts = torch.zeros(self.codebook.num_embeddings, device=latent.device)
+        commitment = latent.new_zeros(()); counts = torch.zeros(self.codebook.num_embeddings, device=latent.device); assignment_samples=[]
         for size, conv in zip(self.scales, self.residual_convs):
             local = F.adaptive_avg_pool2d(residual, size)
             flat = local.permute(0, 2, 3, 1).reshape(-1, local.shape[1])
+            assignment_samples.append(flat.detach())
             distance = flat.square().sum(1, keepdim=True) + self.codebook.weight.square().sum(1) - 2 * flat @ self.codebook.weight.t()
             ids = distance.argmin(1).reshape(latent.shape[0], *size); indices.append(ids)
             counts.scatter_add_(0, ids.flatten(), torch.ones_like(ids.flatten(), dtype=counts.dtype))
@@ -76,10 +123,14 @@ class MultiScaleResidualQuantizer(nn.Module):
             st = local + (embedding - local).detach()
             contribution = conv(F.interpolate(st, latent.shape[-2:], mode="bilinear", align_corners=False))
             quantized_sum = quantized_sum + contribution
-            residual = residual - contribution
+            residual = residual - contribution.detach()
+        self.update_usage_and_revive(counts,torch.cat(assignment_samples,0))
         probability = counts / counts.sum().clamp_min(1)
         perplexity = torch.exp(-(probability * probability.clamp_min(1e-10).log()).sum())
-        metrics = {"perplexity": perplexity, "active_code_ratio": counts.gt(0).float().mean(), "dead_codes": counts.eq(0).sum()}
+        batch_active=counts.gt(0).float().mean()
+        usage_active=self.usage_ema.gt(1/(self.codebook.num_embeddings*100)).float().mean()
+        metrics = {"perplexity": perplexity, "active_code_ratio": batch_active,
+                   "dead_codes": counts.eq(0).sum(), "usage_active_code_ratio": usage_active}
         n = len(self.scales)
         return quantized_sum, indices, codebook_loss / n, commitment / n, metrics
 
